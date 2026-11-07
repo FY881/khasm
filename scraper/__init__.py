@@ -1,0 +1,1 @@
+"""Khasm public-store scraper."""

@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="ar" dir="rtl" data-theme="light">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f6f5f1">
+    <meta name="description" content="خصم بيتابع أسعار نون مصر وأمازون مصر علشان يورّيك التخفيض الحقيقي مقارنة بتاريخ السعر.">
+    <title>خصم — السعر الحقيقي، مش الوهمي</title>
+    <link rel="stylesheet" href="./styles.css">
+    <script src="./app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">تخطّي للمحتوى</a>
+    <header class="site-header">
+      <div class="header-inner page-width">
+        <a class="brand" href="./" aria-label="خصم — الصفحة الرئيسية">
+          <span class="brand-mark" aria-hidden="true">خ</span>
+          <span class="brand-copy"><strong>خَصم</strong><small>السعر على حقيقته</small></span>
+        </a>
+        <div class="header-actions">
+          <span class="free-note"><span aria-hidden="true">✳</span> مجاني وعلى قدّنا</span>
+          <button class="theme-toggle" id="theme-toggle" type="button" aria-pressed="false">
+            <span class="theme-icon" aria-hidden="true">☾</span>
+            <span id="theme-label">الوضع الداكن</span>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main id="main" class="page-width">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <p class="eyebrow"><span class="pulse-dot" aria-hidden="true"></span> بنراقب الأسعار بدل ما نصدّق اللافتة</p>
+          <h1 id="hero-title">الخصم الحقيقي<br><span>بيبان مع الوقت.</span></h1>
+          <p class="hero-description">مش هنحسب التخفيض من سعر «قبل» اللي المتجر كاتبه. بنقارنه بتاريخ سعر المنتج نفسه — عشان تعرف إذا كان نازل بجد ولا لأ.</p>
+          <a class="hero-link" href="#products">شوف المنتجات <span aria-hidden="true">←</span></a>
+        </div>
+        <div class="hero-art" aria-hidden="true">
+          <div class="orbit orbit-one"></div><div class="orbit orbit-two"></div>
+          <div class="hero-stamp"><span class="stamp-check">✓</span><span>تاريخ السعر<br><strong>هو الحكم</strong></span></div>
+          <span class="art-spark spark-one">✳</span><span class="art-spark spark-two">✳</span>
+        </div>
+        <div class="update-card" id="update-status" role="status" aria-live="polite">
+          <span class="update-icon" aria-hidden="true">◷</span>
+          <span class="update-copy"><strong id="update-title">بندور على بيانات الأسعار</strong><small id="update-detail">لحظة واحدة…</small></span>
+          <span class="update-indicator" aria-hidden="true"></span>
+        </div>
+      </section>
+
+      <section id="products" class="products-section" aria-labelledby="products-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow eyebrow-muted">نون مصر · أمازون مصر</p>
+            <h2 id="products-title">لقطة الأسعار</h2>
+          </div>
+          <p class="section-note">المنتجات الجديدة بتفضل واضحة لحد ما يبقى عندنا تاريخ كفاية.</p>
+        </div>
+
+        <form class="filters" id="filters" role="search" aria-label="ابحث وصفّي المنتجات">
+          <label class="search-control">
+            <span class="control-label">دوّر على منتج</span>
+            <span class="input-wrap"><span class="search-icon" aria-hidden="true">⌕</span><input id="search" name="q" type="search" placeholder="مثال: سماعة، موبايل…" autocomplete="off"></span>
+          </label>
+          <label>
+            <span class="control-label">المتجر</span>
+            <select id="store-filter" name="store">
+              <option value="all">كل المتاجر</option>
+              <option value="noon">نون مصر</option>
+              <option value="amazon">أمازون مصر</option>
+            </select>
+          </label>
+          <label>
+            <span class="control-label">القسم</span>
+            <select id="category-filter" name="category">
+              <option value="all">كل الأقسام</option>
+              <option value="phones">موبايلات</option>
+              <option value="laptops">لابتوبات</option>
+              <option value="headphones">سماعات</option>
+              <option value="tvs">تلفزيونات</option>
+              <option value="appliances">أجهزة منزلية</option>
+              <option value="perfumes">عطور</option>
+              <option value="supermarket">سوبر ماركت</option>
+              <option value="gaming">ألعاب</option>
+              <option value="tablets">تابلت</option>
+              <option value="fashion">أزياء</option>
+            </select>
+          </label>
+          <label>
+            <span class="control-label">أقل نزول حقيقي</span>
+            <select id="discount-filter" name="discount">
+              <option value="0">أي نسبة</option>
+              <option value="5">٥٪ أو أكتر</option>
+              <option value="10">١٠٪ أو أكتر</option>
+              <option value="20">٢٠٪ أو أكتر</option>
+              <option value="30">٣٠٪ أو أكتر</option>
+            </select>
+          </label>
+        </form>
+
+        <div class="results-meta"><p id="results-count" aria-live="polite">بنجهّز النتائج…</p><button id="clear-filters" class="text-button" type="button" hidden>امسح الفلاتر</button></div>
+        <div id="message-area"></div>
+        <div id="deals" class="result-groups"></div>
+      </section>
+
+      <section class="how-section" aria-labelledby="how-title">
+        <div class="how-number" aria-hidden="true">01</div>
+        <div><p class="eyebrow eyebrow-muted">من غير لف ودوران</p><h2 id="how-title">بنحسبها إزاي؟</h2></div>
+        <p>بنقارن السعر الحالي بوسيط أسعار المنتج اللي اتسجلت خلال آخر ٣٠ يوم. لو لسه جديد، بنقولك «لسه بنتابع» بدل ما نخمن. وسعر «قبل الخصم» لوحده مش إثبات.</p>
+        <div class="how-seal"><span aria-hidden="true">≈</span><span>السجل<br>قبل الادّعاء</span></div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="page-width footer-inner"><a class="footer-brand" href="./">خَصم</a><p>معلومة تساعدك تقرر — مش وعد بأفضل سعر.</p><a href="#main">لفوق <span aria-hidden="true">↑</span></a></div>
+    </footer>
+
+    <dialog id="product-dialog" class="product-dialog" aria-labelledby="detail-title">
+      <div class="dialog-shell">
+        <button id="detail-close" class="dialog-close" type="button" aria-label="إغلاق التفاصيل">×</button>
+        <div id="detail-content"></div>
+      </div>
+    </dialog>
+  </body>
+</html>
