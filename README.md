@@ -4,11 +4,19 @@
 
 ## مهم: حالة التحديث الفعلية
 
-آخر تشغيل للنظام القديم على GitHub يوم ٧ نوفمبر ٢٠٢٦ قرأ ٤ من ١٠ صفحات أمازون، ولم يقرأ أي صفحة من نون؛ باقي المحاولات حُجبت أو انتهت مهلتها. تعديل نون هنا يستخدم واجهة البحث JSON العامة للمتجر عبر `httpx` وHTTP/2، لكن الاختبار أعاد ضبط الاتصال؛ وتجربة `curl_cffi` أعادت 403. **لم يثبت بعد أن نون يعمل أو أن النتائج مصرية بالجنيه على GitHub Actions**. يرفض الكود بيانات نون إذا لم تثبت الاستجابة بلد مصر وعملة EGP؛ لا توجد أسعار بديلة مختلقة عند الفشل.
+آخر قياس سابق على GitHub يوم ٧ نوفمبر ٢٠٢٦ قرأ ٤ من ١٠ صفحات أمازون و٠ من ١٠ صفحات نون. في تجربة محلية جديدة على فئة واحدة، نجح بديل نون عبر Jina Reader مرة من مرة واستخرج ٥٠ منتجًا من صفحة مصر بالجنيه؛ أما واجهة نون المباشرة ففشلت ٠/١ بمهلة، وأمازون المباشر ٠/١ بـ503. أعاد قارئ أمازون استجابة مغلفة 200 لكن المصدر نفسه 503، لذلك ليس نجاحًا. **هذه عينات صغيرة، وليست قياسًا للمتاجر كلها أو إثباتًا لنجاح GitHub Actions**. لا توجد أسعار مختلقة عند الفشل؛ نحتفظ بآخر سعر مرصود ووقت تحققه.
 
-بعد دمج هذا التعديل فقط، يشغّل GitHub عاملًا لكل متجر بالتوازي لمدة نحو ٥ ساعات ونصف، كل ٦ ساعات. تصميم الجدول يحاول فحص صفحتي الموبايلات واللابتوبات كل ٤ دقائق تقريبًا، وباقي صفحات البحث كل ٢٠ دقيقة تقريبًا، بطلب واحد في الدقيقة لكل متجر. هذه **أهداف إعدادات، وليست فترات محققة أو مضمونة**: مهلات المتجر، تأكيد تغير السعر، تأخير GitHub، واستراحة ما بين التشغيلات قد تزيد المدة كثيرًا. عند الحظر يتوقف العامل مؤقتًا بدل الإلحاح. لا يضمن العامل بقاء منتج معين في نتائج البحث، ولا يعرف المنتجات الأكثر مشاهدة أو قائمة متابعتك الخاصة.
+يشغّل GitHub عاملًا لكل متجر بالتوازي لمدة نحو ٥ ساعات ونصف، كل ٦ ساعات. تصميم الجدول يحاول فحص صفحتي الموبايلات واللابتوبات كل ٤ دقائق تقريبًا، وباقي صفحات البحث كل ٢٠ دقيقة تقريبًا، بطلب واحد في الدقيقة لكل متجر. هذه **أهداف إعدادات، وليست فترات محققة أو مضمونة**: مهلات المتجر، تأكيد تغير السعر، تأخير GitHub، واستراحة ما بين التشغيلات قد تزيد المدة كثيرًا. عند الحظر يتوقف العامل مؤقتًا بدل الإلحاح. لا يضمن العامل بقاء منتج معين في نتائج البحث، ولا يعرف المنتجات الأكثر مشاهدة أو قائمة متابعتك الخاصة.
 
 يحفظ العاملان دفعات كل نحو ٥ دقائق في فرع `data` منفصل عن `main`، وتقرأ الصفحة لقطة الفرع مباشرة. تخزين GitHub المؤقت قد يؤخر ظهور اللقطة نحو ٥ دقائق أخرى؛ لو الفرع غير موجود بعد، تعرض الصفحة نسخة النشر القديمة. وقت «آخر تحقق» خاص بكل منتج، ولا يتجدد إذا فشلت قراءته. تغيير السعر بنسبة ٢٠٪ أو أكثر يحتاج قراءة ثانية متفقة قبل النشر. عند عدم تأكيده نحتفظ بالسعر السابق. نحفظ البائع والتوافر عندما يقدمه المصدر، ونستبعد ما يصرح بأنه غير متاح؛ عدم ظهور حالة التوافر ليس ضمانًا.
+
+## مصادر الأسعار والبديل المجاني
+
+يحاول عامل نون أولًا واجهة البحث JSON العامة عبر HTTP/2. عند انتهاء المهلة أو فشل قابل للاستعادة، يحاول صفحة البحث المصرية عبر [Jina Reader](https://r.jina.ai/docs) بدون مفتاح مدفوع، ويطلب تجاوز ذاكرة القارئ المؤقتة (`X-No-Cache`). يتحقق من حالة المصدر والرابط المصري والجنيه لكل بطاقة؛ إذا لم يثبت ذلك فلا ينشر السعر. تعود مهلة كل طلب ومسافة الدقيقة لكل طلب إلى العامل، بما فيها الطلب البديل. يتوقف العامل ويطبّق التهدئة عند 403 أو 429 أو صفحة تحدٍ بدل إعادة المحاولة عبر مسار آخر. قد يتغير المصدر أو تنفد الحدود المجانية، ولا يضمن طلب تجاوز التخزين المؤقت حداثة بيانات المتجر نفسه. القارئ خدمة خارجية يرى روابط البحث المرسلة إليه؛ لا يرسل قائمة المتابعة. [حدود Jina المعلنة](https://jina.ai/api-dashboard/pricing/) للقارئ بلا مفتاح قد تتغير.
+
+يدعم استخراج JSON-LD لصفحات المنتجات عند توفر عرض مصري واضح بالجنيه. لم يُنشر أو يُختبر وسيط Cloudflare، ولا يوجد ضمان بأن البديل سيعمل من عنوان GitHub. أمازون ما زال يعتمد على قراءته المباشرة ولا يوجد بديل مثبت لـ503. لم تُفعّل تنبيهات تيليجرام أو مقارنة المنتجات بين المتجرين.
+
+الواجهة تعرض مشهد CSS ثلاثي الأبعاد توضيحيًا، لا سعر منتج حقيقيًا. يُفعّل العمق عند ظهور المشهد، ويُعطّل تلقائيًا عند تفضيل تقليل الحركة أو عند الإبلاغ عن ذاكرة لا تزيد على ٤ جيجابايت أو معالج لا يزيد على ٤ أنوية؛ الأجهزة التي لا تُبلغ عن هذه المعلومات قد تختلف.
 
 ## الخصم وقائمة المتابعة
 
@@ -16,7 +24,7 @@
 - للحفاظ على سجل صغير وتراكمي نسجل تغيّرات السعر وعينة يومية، لا كل فحص؛ يعتمد التقييم على العينات اليومية والقراءات القديمة. الرسم وأقل سعر يعكسان **القراءات المرصودة فقط**، وقد يفوتهما تغير بين الفحوص. تبقى السجلات القديمة محفوظة في فرع البيانات.
 - زر «تابع السعر» يحفظ المنتج في هذا المتصفح فقط، ويمكن تصفية القائمة وإزالة المنتجات منها. القائمة لا تُرسل للخادم ولا تنشئ تنبيهًا شخصيًا. تنبيهات تيليجرام ومقارنة المنتج بين المتجرين لم تُفعّل بعد؛ راجع `ROADMAP.md`.
 
-## التفعيل بعد دمج طلب السحب
+## التفعيل بعد دمج طلب السحب (الدمج بقرار المالك)
 
 ١. في GitHub افتح **Settings → Pages → Build and deployment** واختر **GitHub Actions**.
 ٢. افتح **Settings → Actions → General → Workflow permissions** واختر **Read and write permissions** ثم احفظ. تأكد أن قواعد المستودع تسمح لـ Actions بإنشاء فرع `data` والكتابة فيه.
@@ -39,4 +47,4 @@ python3 -m http.server 8000
 
 ## English
 
-Khasm is a free Arabic-first price tracker for Noon Egypt and Amazon Egypt. The last GitHub run read 4/10 Amazon pages and 0/10 Noon pages. The new HTTP/2 Noon JSON integration has not yet been verified against a successful Egyptian response, either locally or on Actions (curl_cffi returned 403); unverified country/currency is rejected, and blocked stores retain their old prices. Two rate-limited workers are configured for 5.5 hours every six hours, aiming at roughly four-minute priority-category checks and twenty-minute rotation elsewhere, with five-minute data-branch batches and potentially another five minutes of CDN caching. These are targets, not measured guarantees. History is append-only but sampled (price changes plus a daily sample); the browser watchlist is local and does not send alerts. See the Arabic setup instructions and `ROADMAP.md` for limitations and deferred work.
+Khasm is a free Arabic-first price tracker for Noon Egypt and Amazon Egypt. A previous GitHub run read 4/10 Amazon pages and 0/10 Noon pages. In a new local single-category test the free Jina Reader fallback returned 50 Egyptian EGP products (1/1); direct Noon and Amazon tests were 0/1 each. This does not establish success rates across categories or on GitHub Actions. Unverified prices are rejected, and blocked stores retain their old prices. Two rate-limited workers are configured for 5.5 hours every six hours, aiming at roughly four-minute priority-category checks and twenty-minute rotation elsewhere, with five-minute data-branch batches and potentially another five minutes of CDN caching. These are targets, not measured guarantees. History is append-only but sampled (price changes plus a daily sample); the browser watchlist is local and does not send alerts. See the Arabic setup instructions and `ROADMAP.md` for limitations and deferred work.
