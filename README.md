@@ -1,45 +1,42 @@
 # خصم | Khasm
 
-خصم موقع مجاني بيتابع أسعار منتجات نون مصر وأمازون مصر، وبيحاول يوضح النزول الحقيقي بمقارنة السعر بتاريخ **نفس المنتج**، مش بالسعر المشطوب. الموقع المتوقع بعد التفعيل: **https://fy881.github.io/khasm/**.
+خصم موقع مجاني لمتابعة أسعار نون مصر وأمازون مصر: [fy881.github.io/khasm](https://fy881.github.io/khasm/). بنقارن السعر بتاريخ **نفس المنتج**، مش بالسعر المشطوب وحده. راجع السعر والتوافر في المتجر قبل الشراء؛ الأسعار ممكن تتغير، والمتاجر ممكن تمنع القراءة.
 
-## شغال إزاي؟
+## مهم: حالة التحديث الفعلية
 
-- GitHub Actions بيحاول يقرأ صفحات بحث من المتجرين كل ٣ ساعات، وبيسجل الأسعار في `data/prices/` كسجل تراكمي لا يُحذف. ملف `data/products.json` نسخة صغيرة للعرض؛ الموقع ثابت على GitHub Pages، من غير خادم أو API مدفوع أو أسرار.
-- محتاجين ٣ قراءات سابقة على يومين مختلفين على الأقل. قبل كده بنقول «جديد – بنتابع السعر» بدل ما نخمّن. بعد كده بنقارن السعر بوسيط القراءات خلال آخر ٣٠ يوم؛ نزول ٥٪ أو أكثر بنعرضه «نزول حقيقي».
-- «خصم وهمي» تنبيه تقريبي: السعر المشطوب أعلى من الوسيط بـ١٥٪ على الأقل، أو في ارتفاع ملحوظ قبل رجوع السعر لمستواه. النزول الحقيقي المثبت بتاريخ السعر له الأولوية. «أرخص سعر من X يوم» مبني فقط على الفترة اللي رصدناها، مش وعد بأقل سعر في السوق.
-- المتاجر ممكن تمنع القراءة أو تغير شكل صفحاتها. لو صفحة ما اتقرتش مش بنخترع أسعار؛ القراءات القديمة بتفضل محفوظة ومعلّمة بتاريخها. راجع السعر والتوافر في المتجر قبل الشراء، لأنهما ممكن يتغيروا بين تحديث وآخر.
+آخر تشغيل للنظام القديم على GitHub يوم ٧ نوفمبر ٢٠٢٦ قرأ ٤ من ١٠ صفحات أمازون، ولم يقرأ أي صفحة من نون؛ باقي المحاولات حُجبت أو انتهت مهلتها. تعديل نون هنا يستخدم واجهة البحث JSON العامة للمتجر عبر `httpx` وHTTP/2، لكن الاختبار أعاد ضبط الاتصال؛ وتجربة `curl_cffi` أعادت 403. **لم يثبت بعد أن نون يعمل أو أن النتائج مصرية بالجنيه على GitHub Actions**. يرفض الكود بيانات نون إذا لم تثبت الاستجابة بلد مصر وعملة EGP؛ لا توجد أسعار بديلة مختلقة عند الفشل.
 
-## أول تجربة
+بعد دمج هذا التعديل فقط، يشغّل GitHub عاملًا لكل متجر بالتوازي لمدة نحو ٥ ساعات ونصف، كل ٦ ساعات. تصميم الجدول يحاول فحص صفحتي الموبايلات واللابتوبات كل ٤ دقائق تقريبًا، وباقي صفحات البحث كل ٢٠ دقيقة تقريبًا، بطلب واحد في الدقيقة لكل متجر. هذه **أهداف إعدادات، وليست فترات محققة أو مضمونة**: مهلات المتجر، تأكيد تغير السعر، تأخير GitHub، واستراحة ما بين التشغيلات قد تزيد المدة كثيرًا. عند الحظر يتوقف العامل مؤقتًا بدل الإلحاح. لا يضمن العامل بقاء منتج معين في نتائج البحث، ولا يعرف المنتجات الأكثر مشاهدة أو قائمة متابعتك الخاصة.
 
-في تجربة ٧ نوفمبر ٢٠٢٦، اتقرأت صفحات أمازون العشر وسُجل ٤٦٨ منتجًا. صفحات نون العشر لم ترجع منتجات: صفحة ردّت بحظر 403 والباقي انتهت مهلته. لذلك اللقطة الأولى فيها أمازون فقط؛ دعم نون محتاج تجربة ناجحة من بيئة التحديث، ومش مضمون. كل المنتجات لسه جديدة لحد ما يتجمع تاريخ كفاية.
+يحفظ العاملان دفعات كل نحو ٥ دقائق في فرع `data` منفصل عن `main`، وتقرأ الصفحة لقطة الفرع مباشرة. تخزين GitHub المؤقت قد يؤخر ظهور اللقطة نحو ٥ دقائق أخرى؛ لو الفرع غير موجود بعد، تعرض الصفحة نسخة النشر القديمة. وقت «آخر تحقق» خاص بكل منتج، ولا يتجدد إذا فشلت قراءته. تغيير السعر بنسبة ٢٠٪ أو أكثر يحتاج قراءة ثانية متفقة قبل النشر. عند عدم تأكيده نحتفظ بالسعر السابق. نحفظ البائع والتوافر عندما يقدمه المصدر، ونستبعد ما يصرح بأنه غير متاح؛ عدم ظهور حالة التوافر ليس ضمانًا.
 
-## التفعيل مرة واحدة بعد دمج طلب السحب
+## الخصم وقائمة المتابعة
 
-من إعدادات المستودع على GitHub:
-1. **Settings → Pages → Build and deployment → Source: GitHub Actions**.
-2. **Settings → Actions → General → Workflow permissions → Read and write permissions → Save** عشان التحديث التلقائي يقدر يحفظ البيانات.
+- نحتاج ٣ قراءات سابقة على يومين مختلفين على الأقل قبل تقييم المنتج. بعدها نقارن السعر بوسيط القراءات المتاحة خلال ٣٠ يومًا؛ نزول ٥٪ أو أكثر يظهر «نزول حقيقي». السعر المشطوب المرتفع أو الارتفاع قبل التخفيض قد يشيران لخصم مضلل، لكن التحذير تقديري وليس حكمًا قاطعًا.
+- للحفاظ على سجل صغير وتراكمي نسجل تغيّرات السعر وعينة يومية، لا كل فحص؛ يعتمد التقييم على العينات اليومية والقراءات القديمة. الرسم وأقل سعر يعكسان **القراءات المرصودة فقط**، وقد يفوتهما تغير بين الفحوص. تبقى السجلات القديمة محفوظة في فرع البيانات.
+- زر «تابع السعر» يحفظ المنتج في هذا المتصفح فقط، ويمكن تصفية القائمة وإزالة المنتجات منها. القائمة لا تُرسل للخادم ولا تنشئ تنبيهًا شخصيًا. تنبيهات تيليجرام ومقارنة المنتج بين المتجرين لم تُفعّل بعد؛ راجع `ROADMAP.md`.
 
-بعد الدمج والتفعيل، شغّل **Actions → Update prices → Run workflow** مرة للتجربة، أو انتظر الجدول التلقائي. النشر بيتم بعد تحديث الأسعار وكمان عند أي push إلى `main`. توقيت cron مش مضمون بالدقيقة، ونجاح التحديث يعتمد على إتاحة صفحات المتاجر. لو حماية الفرع تمنع كتابة Actions، لازم تسمح بالتحديث أو تعدل طريقة استقبال البيانات.
+## التفعيل بعد دمج طلب السحب
+
+١. في GitHub افتح **Settings → Pages → Build and deployment** واختر **GitHub Actions**.
+٢. افتح **Settings → Actions → General → Workflow permissions** واختر **Read and write permissions** ثم احفظ. تأكد أن قواعد المستودع تسمح لـ Actions بإنشاء فرع `data` والكتابة فيه.
+٣. بعد الدمج افتح **Actions → Price workers → Run workflow**، ثم راقب سجلي العاملين. ينشئ التشغيل الأول فرع البيانات من السجل الحالي إذا لم يكن موجودًا. نجاح الوظيفة وحده لا يثبت وصول المتجر: افحص عدد المنتجات والأخطاء وأوقات آخر تحقق في الموقع. الجدول قد يتأخر أو يتوقف حسب سياسات GitHub.
+
+لا يلزم مفتاح أو اشتراك مدفوع. GitHub Actions على العدّائين العاديين للمستودعات العامة وGitHub Pages مجانيان وفق حدود وسياسات GitHub. لا يوجد خادم أو بروكسي مدفوع؛ توافر مصادر المتاجر خارج سيطرتنا.
 
 ## تشغيل واختبار محلي (اختياري)
 
 ```sh
 python3 -m pip install -r scraper/requirements.txt pytest
-python3 -m scraper.scrape
 python3 -m pytest -q
+node --check app.js
 python3 -m http.server 8000
 ```
 
-افتح `http://localhost:8000/`. التشغيل المحلي يضيف قراءات حقيقية إلى السجل الموجود؛ لا تمسح ملفات التاريخ لو عايز تحتفظ بالمقارنات. تفاصيل الصفحات المحجوبة تظهر في سجل تشغيل Actions. مفيش مفاتيح أو اشتراكات مطلوبة. GitHub Pages وActions متاحان مجانًا للمستودعات العامة ضمن سياسات وحدود GitHub؛ الاعتماد على صفحات المتاجر الخارجية ليس مضمونًا.
+افتح `http://localhost:8000/`. للتجربة القديمة اليدوية فقط: `python3 -m scraper.scrape` يضيف قراءات حقيقية إلى `data/` المحلي. عامل التحديث الجديد يكتب إلى فرع `data` عبر Git ويحتاج صلاحية كتابة؛ لا تشغله على مستودع إنتاج بغرض التجربة دون قصد. لا تحذف السجلات القديمة إن أردت الاحتفاظ بتاريخ المقارنة.
 
 ---
 
-# English
+## English
 
-Khasm is a free, Arabic-first price tracker for Noon Egypt and Amazon Egypt. Its intended live URL after setup is **https://fy881.github.io/khasm/**. It compares each product's current price with the median of its own observed prices over the last 30 days, not just the store's struck-through price. At least three prior observations across two dates are required; a drop of at least 5% is marked as real. Suspicious list prices or pre-discount hikes are flagged, while genuinely lower historical prices take precedence. Lowest-price labels describe only the observed period.
-
-A GitHub Actions schedule runs every three hours and appends observations to `data/prices/`; `data/products.json` is the static site's compact view. Blocked pages and outdated observations are not invented or silently presented as current. Prices and availability should be checked at the store. The project uses public GitHub Pages and Actions without paid services or secrets, subject to GitHub's policies and the stores' availability.
-
-**One-time owner setup after merging:** in **Settings → Pages**, select **GitHub Actions** as the source; in **Settings → Actions → General → Workflow permissions**, select **Read and write permissions** and save. Then optionally run **Actions → Update prices → Run workflow**. Normal pushes to `main` deploy Pages; the scrape workflow also deploys explicitly because commits made with `GITHUB_TOKEN` do not trigger another push workflow. Scheduled runs can be delayed, and branch protection must permit the automated commit.
-
-For local development, install `scraper/requirements.txt` and `pytest`, run `python3 -m scraper.scrape`, `python3 -m pytest -q`, and `python3 -m http.server 8000`. The scrape appends to existing history; keep the history files to retain comparisons.
+Khasm is a free Arabic-first price tracker for Noon Egypt and Amazon Egypt. The last GitHub run read 4/10 Amazon pages and 0/10 Noon pages. The new HTTP/2 Noon JSON integration has not yet been verified against a successful Egyptian response, either locally or on Actions (curl_cffi returned 403); unverified country/currency is rejected, and blocked stores retain their old prices. Two rate-limited workers are configured for 5.5 hours every six hours, aiming at roughly four-minute priority-category checks and twenty-minute rotation elsewhere, with five-minute data-branch batches and potentially another five minutes of CDN caching. These are targets, not measured guarantees. History is append-only but sampled (price changes plus a daily sample); the browser watchlist is local and does not send alerts. See the Arabic setup instructions and `ROADMAP.md` for limitations and deferred work.

@@ -10,6 +10,7 @@
   const money = new Intl.NumberFormat('ar-EG', { style: 'currency', currency: 'EGP', maximumFractionDigits: 2 });
   const digits = new Intl.NumberFormat('ar-EG', { maximumFractionDigits: 1 });
   const byId = (id) => document.getElementById(id);
+  const watchlistStorageKey = 'khasm-watchlist-v1';
   const dialog = byId('product-dialog');
   const details = byId('detail-content');
   const elements = {
@@ -17,11 +18,17 @@
     discount: byId('discount-filter'), clear: byId('clear-filters'), results: byId('deals'),
     count: byId('results-count'), message: byId('message-area'),
     update: byId('update-status'), updateTitle: byId('update-title'), updateDetail: byId('update-detail'),
+    watchlistToggle: byId('watchlist-toggle'), watchlistStatus: byId('watchlist-status'),
   };
   let products = [];
+  let watchlist = new Set();
+  let showWatchlistOnly = false;
+  let watchlistStorageFailed = false;
+  let renderedStaleness = new Map();
   let updatedAt = null;
   let loadError = false;
   let blockedPages = [];
+  const relativeTime = new Intl.RelativeTimeFormat('ar-EG', { numeric: 'auto' });
 
   function node(tag, className, text) {
     const el = document.createElement(tag);
@@ -50,6 +57,77 @@
     return allowed ? url : null;
   }
 
+  function configuredTelegramChannel() {
+    const configured = document.querySelector('meta[name="telegram-channel-url"]')?.content.trim();
+    const url = safeHttpsUrl(configured);
+    if (!url || url.hostname.toLowerCase() !== 't.me' || url.username || url.password || url.port) return null;
+    if (!/^\/(?:[A-Za-z0-9_]{5,}|\+[A-Za-z0-9_-]+)\/?$/.test(url.pathname)) return null;
+    return url;
+  }
+
+  function productsDataUrl() {
+    const configured = document.querySelector('meta[name="products-data-url"]')?.content.trim();
+    return new URL(configured || 'data/products.json', document.baseURI);
+  }
+
+  async function fetchProductsPayload() {
+    const localUrl = new URL('data/products.json', document.baseURI);
+    const remoteUrl = productsDataUrl();
+    let response = await fetch(remoteUrl);
+    if (response.status === 404 && remoteUrl.href !== localUrl.href) {
+      response = await fetch(localUrl);
+    }
+    if (!response.ok) throw new Error('Products data request failed');
+    return response.json();
+  }
+
+  function readWatchlist() {
+    try {
+      const saved = localStorage.getItem(watchlistStorageKey);
+      const keys = saved === null ? [] : JSON.parse(saved);
+      if (!Array.isArray(keys)) throw new Error('Invalid saved watchlist');
+      watchlist = new Set(keys.filter((key) => typeof key === 'string' && key.length > 0 && key.length <= 500).slice(0, 200));
+      watchlistStorageFailed = false;
+    } catch {
+      watchlist = new Set();
+      watchlistStorageFailed = true;
+    }
+    updateWatchlistStatus();
+    updateWatchlistControl();
+  }
+
+  function updateWatchlistStatus() {
+    elements.watchlistStatus.hidden = !watchlistStorageFailed;
+    elements.watchlistStatus.textContent = watchlistStorageFailed
+      ? 'المتصفح منع التخزين؛ قائمة المتابعة هتفضل موجودة لحد ما الصفحة تتقفل بس.'
+      : '';
+  }
+
+  function updateWatchlistControl() {
+    elements.watchlistToggle.setAttribute('aria-pressed', String(showWatchlistOnly));
+    elements.watchlistToggle.textContent = showWatchlistOnly
+      ? `عرض كل المنتجات (${digits.format(watchlist.size)})`
+      : `قائمة المتابعة (${digits.format(watchlist.size)})`;
+  }
+
+  function saveWatchlist() {
+    try {
+      localStorage.setItem(watchlistStorageKey, JSON.stringify([...watchlist]));
+      watchlistStorageFailed = false;
+    } catch {
+      watchlistStorageFailed = true;
+    }
+    updateWatchlistStatus();
+  }
+
+  function relativeObservationText(observedAt) {
+    const seconds = Math.max(0, Math.floor((Date.now() - observedAt.getTime()) / 1000));
+    if (seconds < 60) return 'اتشيك من أقل من دقيقة';
+    if (seconds < 3600) return `آخر تحقق للسعر: ${relativeTime.format(-Math.floor(seconds / 60), 'minute')}`;
+    if (seconds < 86400) return `آخر تحقق للسعر: ${relativeTime.format(-Math.floor(seconds / 3600), 'hour')}`;
+    return `آخر تحقق للسعر: ${relativeTime.format(-Math.floor(seconds / 86400), 'day')}`;
+  }
+
   function normalizeProduct(item) {
     if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
     const id = typeof item.id === 'string' || typeof item.id === 'number' ? String(item.id).trim() : '';
@@ -69,6 +147,7 @@
     if (status === 'real' && !history.length) status = 'none';
     const listPrice = item.list_price === null || item.list_price === undefined ? null : Number(item.list_price);
     const lowestDays = score.lowest_days === null || score.lowest_days === undefined ? NaN : Number(score.lowest_days);
+    const lastCheckedStamp = typeof item.last_checked === 'string' ? Date.parse(item.last_checked) : NaN;
     return {
       id, key: `${store}:${id}`, store, title: item.title.trim(), url: item.url,
       image: item.image, currentPrice, listPrice: Number.isFinite(listPrice) && listPrice > 0 ? listPrice : null,
@@ -76,7 +155,7 @@
       category: typeof item.category === 'string' && Object.prototype.hasOwnProperty.call(categoryLabels, item.category) ? item.category : null,
       status, discount: Number.isFinite(discount) ? Math.max(0, discount) : 0,
       lowestDays: Number.isInteger(lowestDays) && lowestDays >= 0 ? lowestDays : null,
-      history,
+      history, lastChecked: Number.isFinite(lastCheckedStamp) ? new Date(lastCheckedStamp) : null,
     };
   }
 
@@ -92,6 +171,7 @@
     if (product.status === 'real' && product.discount < minDiscount) return false;
     if (product.status === 'new' && minDiscount > 0) return false;
     if (product.status === 'fake' && product.discount < minDiscount) return false;
+    if (product.status === 'none' && minDiscount > 0) return false;
     return true;
   }
 
@@ -107,7 +187,7 @@
   }
 
   function productObservedAt(product) {
-    return product.history.length ? product.history[product.history.length - 1].date : null;
+    return product.lastChecked || (product.history.length ? product.history[product.history.length - 1].date : null);
   }
 
   function productIsStale(product) {
@@ -118,10 +198,23 @@
   function observationLabel(product) {
     const observedAt = productObservedAt(product);
     const time = node('time', `observation-note${productIsStale(product) ? ' is-stale' : ''}`, observedAt
-      ? `آخر رصد: ${formatDate(observedAt, { year: 'numeric', hour: 'numeric', minute: '2-digit' })}`
+      ? relativeObservationText(observedAt)
       : 'وقت آخر رصد مش متاح');
-    if (observedAt) time.dateTime = observedAt.toISOString();
+    if (observedAt) {
+      time.dateTime = observedAt.toISOString();
+      time.title = `آخر تحقق للسعر: ${formatDate(observedAt, { year: 'numeric', hour: 'numeric', minute: '2-digit' })}`;
+    }
     return time;
+  }
+
+  function refreshObservationLabels() {
+    document.querySelectorAll('time.observation-note[datetime]').forEach((time) => {
+      const observedAt = new Date(time.dateTime);
+      if (!Number.isFinite(observedAt.getTime())) return;
+      time.textContent = relativeObservationText(observedAt);
+      time.title = `آخر تحقق للسعر: ${formatDate(observedAt, { year: 'numeric', hour: 'numeric', minute: '2-digit' })}`;
+      time.classList.toggle('is-stale', Date.now() - observedAt.getTime() > 6 * 3_600_000);
+    });
   }
 
   function updateFreshness() {
@@ -191,7 +284,9 @@
       ? node('span', 'product-badge stale-badge', '◷ رصد قديم')
       : product.status === 'real'
       ? node('span', 'product-badge', '✓ نزول حقيقي')
-      : node('span', 'product-badge new-badge', '◷ جديد — بنتابع');
+      : product.status === 'new'
+      ? node('span', 'product-badge new-badge', '◷ جديد — بنتابع')
+      : node('span', 'product-badge new-badge', watchlist.has(product.key) ? '♡ في المتابعة' : 'مفيش نزول مؤكد');
     image.append(badge);
     card.append(image);
     const info = node('span', 'product-info');
@@ -203,6 +298,8 @@
     price.append(node('span', 'current-price', money.format(product.currentPrice)));
     if (product.status === 'real' && stale) price.append(node('span', 'new-price-note', `كان أقل بـ ${digits.format(product.discount)}٪ وقت الرصد`));
     else if (product.status === 'real') price.append(node('span', 'discount-value', `−${digits.format(product.discount)}٪`));
+    else if (product.status === 'fake') price.append(node('span', 'new-price-note', 'الخصم مش حقيقي'));
+    else if (product.status === 'none') price.append(node('span', 'new-price-note', 'مفيش نزول مؤكد دلوقتي'));
     else price.append(node('span', 'new-price-note', 'لسه مفيش مقارنة'));
     info.append(price);
     info.append(observationLabel(product));
@@ -259,13 +356,17 @@
     elements.results.replaceChildren();
     elements.message.replaceChildren();
     const filters = currentFilters();
-    const relevant = products.filter((product) => productMatches(product, filters));
+    renderedStaleness = new Map(products.map((product) => [product.key, productIsStale(product)]));
+    updateWatchlistControl();
+    const relevant = products.filter((product) => productMatches(product, filters)
+      && (!showWatchlistOnly || watchlist.has(product.key)));
     const real = relevant.filter((product) => product.status === 'real' && !productIsStale(product));
     const fresh = relevant.filter((product) => product.status === 'new' && !productIsStale(product));
     const stale = relevant.filter((product) => ['real', 'new'].includes(product.status) && productIsStale(product));
     const fake = relevant.filter((product) => product.status === 'fake');
-    const visibleCount = real.length + fresh.length + stale.length;
-    elements.count.textContent = loadError ? 'مش قادرين نعرض الأسعار دلوقتي' : `${digits.format(visibleCount)} منتج — ${digits.format(real.length)} رصد حديث لخصم حقيقي، ${digits.format(fresh.length)} جديد، ${digits.format(stale.length)} رصد قديم`;
+    const savedOther = showWatchlistOnly ? relevant.filter((product) => ['fake', 'none'].includes(product.status)) : [];
+    const visibleCount = real.length + fresh.length + stale.length + savedOther.length;
+    elements.count.textContent = loadError ? 'مش قادرين نعرض الأسعار دلوقتي' : `${digits.format(visibleCount)} منتج — ${digits.format(real.length)} خصم حقيقي بقراءة خلال ٦ ساعات، ${digits.format(fresh.length)} جديد، ${digits.format(stale.length)} قراءة أقدم من ٦ ساعات${showWatchlistOnly ? `، ${digits.format(savedOther.length)} محفوظ للمتابعة` : ''}`;
 
     if (loadError) addNotice('تعذر تحميل ملف الأسعار. مفيش أسعار مخزنة للعرض؛ هنحاول تاني لما تحدّث الصفحة.', 'معلومة:');
     else if (!updatedAt && products.length) addNotice('بيانات الأسعار موجودة لكن وقت آخر تحديث مش واضح، ومش قادرين نضمن إنها حديثة. اتأكد من سعر المتجر قبل الشراء.', 'تاريخ التحديث غير معروف.');
@@ -278,13 +379,21 @@
       addNotice('الحد الأدنى للنسبة بيخفي المنتجات الجديدة مؤقتًا، لأنها لسه من غير مقارنة سعرية.', 'ملحوظة للفلاتر:');
     }
 
-    const hasProducts = relevant.some((product) => ['real', 'new', 'fake'].includes(product.status));
+    const hasProducts = relevant.some((product) => ['real', 'new', 'fake'].includes(product.status)) || savedOther.length > 0;
     if (!hasProducts) {
       const hasAnyData = products.length > 0;
-      const title = filters.query || filters.store !== 'all' || filters.category !== 'all' || filters.minDiscount > 0
+      const title = showWatchlistOnly && watchlist.size === 0
+        ? 'قائمة المتابعة فاضية'
+        : showWatchlistOnly || filters.query || filters.store !== 'all' || filters.category !== 'all' || filters.minDiscount > 0
         ? 'ملقيناش حاجة بالمواصفات دي'
         : 'لسه مفيش أسعار مسجلة';
-      const message = filters.query || filters.store !== 'all' || filters.category !== 'all' || filters.minDiscount > 0
+      const message = showWatchlistOnly && watchlist.size === 0
+        ? 'افتح تفاصيل أي منتج واضغط «تابع السعر» علشان تحفظه على جهازك.'
+        : showWatchlistOnly
+        ? filters.query || filters.store !== 'all' || filters.category !== 'all' || filters.minDiscount > 0
+          ? 'مفيش منتج محفوظ بيطابق الفلاتر دي. جرّب تغيّر البحث أو الفلاتر.'
+          : 'المنتجات المحفوظة مش موجودة ضمن بيانات الأسعار الحالية.'
+        : filters.query || filters.store !== 'all' || filters.category !== 'all' || filters.minDiscount > 0
         ? 'جرّب تغيّر البحث أو الفلاتر. مش بنكمّل النتايج بأسعار تخمينية.'
         : hasAnyData ? 'مفيش نزول حقيقي مؤكد أو منتجات جديدة للعرض حاليًا.' : 'أول ما بيانات المنتجات توصل، هتظهر هنا. لحد وقتها مش هنخمن أسعار.';
       elements.results.append(emptyState(title, message));
@@ -295,14 +404,14 @@
 
     if (real.length || (!fresh.length && !stale.length && !fake.length)) {
       const realSection = node('section', 'deal-section');
-      realSection.setAttribute('aria-label', 'الخصومات الحقيقية المرصودة حديثًا');
-      realSection.append(sectionHeading('نزول حقيقي — رصد حديث', real.length, 'real'));
+      realSection.setAttribute('aria-label', 'الخصومات الحقيقية بقراءات عمرها أقل من ٦ ساعات');
+      realSection.append(sectionHeading('نزول حقيقي — قراءة خلال ٦ ساعات', real.length, 'real'));
       if (real.length) {
         const grid = node('div', 'product-grid');
         real.forEach((product) => grid.append(productCard(product)));
         realSection.append(grid);
       } else {
-        realSection.append(emptyState('مفيش نزول حقيقي مؤكد برصد حديث', 'هنعرض العرض هنا بس لما سعر مرصود حديثًا يبقى أقل من سجل المنتج نفسه.'));
+        realSection.append(emptyState('مفيش نزول حقيقي مؤكد بقراءة حديثة', 'هنعرض العرض هنا لما قراءة سعر عمرها أقل من ٦ ساعات تبقى أقل من سجل المنتج نفسه.'));
       }
       elements.results.append(realSection);
     }
@@ -325,7 +434,16 @@
       staleSection.append(grid);
       elements.results.append(staleSection);
     }
-    const excluded = renderExcluded(fake);
+    if (savedOther.length) {
+      const savedSection = node('section', 'deal-section');
+      savedSection.setAttribute('aria-label', 'أسعار محفوظة في قائمة المتابعة');
+      savedSection.append(sectionHeading('أسعار محفوظة للمتابعة', savedOther.length, 'new'));
+      const grid = node('div', 'product-grid');
+      savedOther.forEach((product) => grid.append(productCard(product)));
+      savedSection.append(grid);
+      elements.results.append(savedSection);
+    }
+    const excluded = renderExcluded(showWatchlistOnly ? [] : fake);
     if (excluded) elements.results.append(excluded);
   }
 
@@ -451,6 +569,32 @@
     }
     details.append(extra);
     const actions = node('div', 'detail-actions');
+    const watching = watchlist.has(product.key);
+    const watch = node('button', 'action-link watch-toggle', watching ? '✓ بتابع السعر' : '♡ تابع السعر');
+    watch.type = 'button';
+    watch.setAttribute('aria-pressed', String(watching));
+    const watchFeedback = node('p', 'watchlist-feedback');
+    watch.addEventListener('click', () => {
+      if (watchlist.has(product.key)) {
+        watchlist.delete(product.key);
+      } else {
+        if (watchlist.size >= 200) {
+          watchFeedback.textContent = 'قائمة المتابعة وصلت للحد الأقصى (٢٠٠ منتج).';
+          return;
+        }
+        watchlist.add(product.key);
+      }
+      saveWatchlist();
+      const isWatching = watchlist.has(product.key);
+      watch.setAttribute('aria-pressed', String(isWatching));
+      watch.textContent = isWatching ? '✓ بتابع السعر' : '♡ تابع السعر';
+      watchFeedback.textContent = watchlistStorageFailed
+        ? `اتحدّثت القائمة مؤقتًا، لكن مش هتفضل محفوظة بعد إغلاق الصفحة. ${isWatching ? 'المنتج اتضاف.' : 'المنتج اتشال.'}`
+        : isWatching ? 'اتحفظ المنتج في قائمة المتابعة على جهازك.' : 'اتشال المنتج من قائمة المتابعة.';
+      updateWatchlistControl();
+      render();
+    });
+    actions.append(watch);
     const storeUrl = safeStoreUrl(product);
     if (storeUrl) {
       const shop = node('a', 'action-link primary', 'افتح المنتج في المتجر ↗');
@@ -460,7 +604,16 @@
     const shareText = `${product.title} — ${money.format(product.currentPrice)} في ${storeLabels[product.store]}\n${window.location.href}`;
     share.href = `https://wa.me/?text=${encodeURIComponent(shareText)}`;
     share.target = '_blank'; share.rel = 'noopener noreferrer'; actions.append(share);
-    details.append(actions, node('p', 'dialog-footnote', 'ده آخر سعر اتسجل، مش ضمان إنه السعر الحالي. راجع سعر المتجر وقت الشراء. تقييمنا مبني على تاريخ السعر، مش على سعر القائمة.'));
+    const telegram = configuredTelegramChannel();
+    if (telegram) {
+      const channel = node('a', 'action-link telegram-link', 'تابع تنبيهات خَصم العامة على تيليجرام ↗');
+      channel.href = telegram.href; channel.target = '_blank'; channel.rel = 'noopener noreferrer'; actions.append(channel);
+    }
+    details.append(actions, watchFeedback,
+      node('p', 'watchlist-note', telegram
+        ? 'قائمة المتابعة على هذا المتصفح فقط؛ مش بتوصل للسيرفر ومش بتبعت تنبيهات شخصية. قناة تيليجرام عامة.'
+        : 'قائمة المتابعة على هذا المتصفح فقط؛ مش بتوصل للسيرفر ومش بتبعت تنبيهات شخصية. قناة تيليجرام مش مهيأة هنا.'),
+      node('p', 'dialog-footnote', 'ده آخر سعر اتسجل، مش ضمان إنه السعر الحالي. راجع سعر المتجر وقت الشراء. تقييمنا مبني على تاريخ السعر، مش على سعر القائمة.'));
   }
 
   function syncProductRoute() {
@@ -483,10 +636,7 @@
 
   async function loadProducts() {
     try {
-      const path = new URL('data/products.json', document.baseURI);
-      const response = await fetch(path, { cache: 'no-store' });
-      if (!response.ok) throw new Error('Products data request failed');
-      const payload = await response.json();
+      const payload = await fetchProductsPayload();
       if (!payload || typeof payload !== 'object' || !Array.isArray(payload.products)) throw new Error('Invalid products data');
       const stamp = typeof payload.updated_at === 'string' ? Date.parse(payload.updated_at) : NaN;
       updatedAt = Number.isFinite(stamp) ? new Date(stamp) : null;
@@ -520,6 +670,30 @@
   try { savedTheme = localStorage.getItem('khasm-theme'); } catch { /* Use the browser preference. */ }
   setTheme(savedTheme === 'dark' || savedTheme === 'light' ? savedTheme : (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'), false);
   themeButton.addEventListener('click', () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
+
+  readWatchlist();
+  elements.watchlistToggle.addEventListener('click', () => {
+    showWatchlistOnly = !showWatchlistOnly;
+    render();
+  });
+  window.addEventListener('storage', (event) => {
+    if (event.key !== watchlistStorageKey && event.key !== null) return;
+    readWatchlist();
+    render();
+    syncProductRoute();
+  });
+  function refreshClock() {
+    refreshObservationLabels();
+    updateFreshness();
+    if (products.some((product) => productIsStale(product) !== renderedStaleness.get(product.key))) {
+      render();
+      syncProductRoute();
+    }
+  }
+  window.setInterval(refreshClock, 60_000);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) refreshClock();
+  });
 
   ['input', 'change'].forEach((eventName) => {
     elements.search.addEventListener(eventName, render);

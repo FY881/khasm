@@ -1,22 +1,25 @@
-name: Update prices
+name: Price workers
 
 on:
   schedule:
-    - cron: '0 */3 * * *'
+    - cron: '0 */6 * * *'
   workflow_dispatch:
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
 
 concurrency:
-  group: price-scrape
+  group: khasm-price-workers-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        store: [noon, amazon]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -27,27 +30,13 @@ jobs:
           cache: pip
           cache-dependency-path: scraper/requirements.txt
       - run: pip install -r scraper/requirements.txt
-      - name: Scrape prices
-        run: python -m scraper.scrape
-      - name: Commit observations
+      - name: Run rate-limited store worker
         env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add data/
-          if ! git diff --cached --quiet; then
-            git commit -m 'Update price observations'
-            git pull --rebase origin "$DEFAULT_BRANCH"
-            git push origin "HEAD:$DEFAULT_BRANCH"
-          fi
-
-  # Pushes made with GITHUB_TOKEN do not trigger another workflow, so deploy
-  # explicitly after a scheduled scrape as well as on normal pushes.
-  deploy:
-    needs: scrape
-    uses: ./.github/workflows/pages.yml
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
+          KHASM_LOG_LEVEL: INFO
+        run: >-
+          python -m scraper.worker
+          --store '${{ matrix.store }}'
+          --duration-seconds 19800
+          --request-interval 60
+          --publish-interval 300
+          --priority-categories phones,laptops

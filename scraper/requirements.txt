@@ -1,2 +1,2 @@
-requests>=2.31,<3
-beautifulsoup4>=4.12,<5
+httpx[http2]==0.28.1
+beautifulsoup4==4.15.0

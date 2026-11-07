@@ -3,7 +3,9 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
+import httpx
 from scraper import scoring, scrape
 from scraper.scrape import parse_price, parse_search_page, search_pages
 
@@ -30,6 +32,33 @@ class ScraperTests(unittest.TestCase):
         self.assertEqual(products[0]["list_price"], 10000.0)
         self.assertEqual(products[0]["url"], "https://www.amazon.eg/dp/B012345678")
 
+    def test_amazon_ignores_explicitly_unavailable_cards_with_prices(self):
+        html = '''
+        <div data-component-type="s-search-result" data-asin="B012345678">
+          <h2><a href="/dp/B012345678">Unavailable phone</a></h2>
+          <span class="a-price"><span class="a-offscreen">EGP 8,500.00</span></span>
+          <span class="a-color-state">Currently unavailable.</span>
+        </div>
+        <div data-component-type="s-search-result" data-asin="B012345679">
+          <h2><a href="/dp/B012345679">هاتف غير متوفر</a></h2>
+          <span class="a-price"><span class="a-offscreen">EGP 7,500.00</span></span>
+        </div>
+        <div data-component-type="s-search-result" data-asin="B012345680">
+          <h2><a href="/dp/B012345680">Schema unavailable phone</a></h2>
+          <span class="a-price"><span class="a-offscreen">EGP 6,500.00</span></span>
+          <link itemprop="availability" href="https://schema.org/OutOfStock">
+        </div>
+        <div data-component-type="s-search-result" data-asin="B012345681">
+          <h2><a href="/dp/B012345681">متوفر هاتف</a></h2>
+          <span class="a-price"><span class="a-offscreen">EGP 5,500.00</span></span>
+          <link itemprop="availability" href="https://schema.org/InStock">
+        </div>'''
+
+        products = parse_search_page("amazon", "phones", "https://www.amazon.eg/s?k=phone", html)
+
+        self.assertEqual([product["id"] for product in products], ["amazon-B012345681"])
+        self.assertEqual(products[0]["current_price"], 5500.0)
+
     def test_noon_card(self):
         html = '''<div data-qa="product-block"><a href="/egypt-ar/product/p/ABC123/"><h3>منتج تجريبي</h3>
           <img src="https://images.example/noon.jpg"></a><span data-qa="price">١٬٢٩٩ جنيه</span>
@@ -49,6 +78,136 @@ class ScraperTests(unittest.TestCase):
         pages = search_pages()
         self.assertEqual(sum(s == "noon" for s, _, _ in pages), 10)
         self.assertEqual(sum(s == "amazon" for s, _, _ in pages), 10)
+
+    def test_noon_search_uses_small_public_json_page(self):
+        noon_pages = [(category, url) for store, category, url in search_pages() if store == "noon"]
+        category, url = noon_pages[0]
+        self.assertEqual(category, "phones")
+        self.assertEqual(urlsplit(url).hostname, "www.noon.com")
+        self.assertEqual(urlsplit(url).path, "/_vs/nc/mp-customer-catalog-api/api/v3/u/search")
+        query = parse_qs(urlsplit(url).query)
+        self.assertEqual(query["q"], ["هواتف ذكية"])
+        self.assertEqual(query["limit"], ["20"])
+        self.assertEqual(query["country"], ["eg"])
+        self.assertEqual(query["language"], ["ar"])
+
+    def test_noon_json_fixture_prices_seller_urls_and_stock(self):
+        fixture = Path(__file__).parent / "fixtures" / "noon_search.json"
+        payload = json.loads(fixture.read_text(encoding="utf-8"))
+        products = parse_search_page(
+            "noon", "phones", "https://www.noon.com/_vs/nc/mp-customer-catalog-api/api/v3/u/search", json.dumps(payload),
+        )
+        self.assertEqual([item["id"] for item in products], ["noon-N12345678A", "noon-N23456789A"])
+        self.assertEqual(products[0]["current_price"], 1267.0)
+        self.assertEqual(products[0]["list_price"], 1649.0)
+        self.assertEqual(products[0]["seller"], "Test seller")
+        self.assertEqual(products[0]["url"], "https://www.noon.com/sample-phone/N12345678A/p?o=offer1")
+        self.assertEqual(products[0]["image"], "https://f.nooncdn.com/p/sample.jpg")
+        self.assertEqual(products[1]["current_price"], 900.0)
+        self.assertIsNone(products[1]["list_price"])
+
+    def test_noon_json_requires_explicit_egypt_region_and_egp_currency(self):
+        fixture = Path(__file__).parent / "fixtures" / "noon_search.json"
+        payload = json.loads(fixture.read_text(encoding="utf-8"))
+        payload.pop("country_code")
+        self.assertEqual(
+            parse_search_page("noon", "phones", "https://www.noon.com/api", json.dumps(payload)),
+            [],
+        )
+        payload["country_code"] = "EG"
+        payload["currency"] = "AED"
+        self.assertEqual(
+            parse_search_page("noon", "phones", "https://www.noon.com/api", json.dumps(payload)),
+            [],
+        )
+
+    def test_noon_json_rejects_mixed_region_or_currency_hits(self):
+        fixture = Path(__file__).parent / "fixtures" / "noon_search.json"
+        payload = json.loads(fixture.read_text(encoding="utf-8"))
+        payload["hits"][0]["currency"] = "AED"
+        payload["hits"][1]["country_code"] = "AE"
+        products = parse_search_page(
+            "noon", "phones", "https://www.noon.com/api", json.dumps(payload),
+        )
+        self.assertEqual(products, [])
+
+
+class HttpClientTests(unittest.TestCase):
+    def test_http2_client_and_egypt_locale_headers(self):
+        with patch.object(scrape.httpx, "Client") as client_factory:
+            scrape.StoreScraper()
+        self.assertIs(client_factory.call_args.kwargs["http2"], True)
+
+        url = "https://www.noon.com/_vs/nc/mp-customer-catalog-api/api/v3/u/search?q=x&limit=20&country=eg&language=ar"
+        request = httpx.Request("GET", url)
+        response = httpx.Response(200, request=request, json={"country_code": "EG", "currency": "EGP", "hits": []})
+        client = patch.object(scrape.httpx, "Client")
+        with client as client_factory:
+            client_factory.return_value.headers = {}
+            client_factory.return_value.get.return_value = response
+            scraper = scrape.StoreScraper(delay=0, retries=0)
+            body, error = scraper.fetch("noon", url)
+
+        self.assertIsNone(error)
+        self.assertEqual(json.loads(body), {"country_code": "EG", "currency": "EGP", "hits": []})
+        headers = client_factory.return_value.get.call_args.kwargs["headers"]
+        self.assertEqual(headers["x-locale"], "ar-eg")
+        self.assertEqual(headers["Accept-Language"], "ar-EG,ar;q=0.9,en;q=0.7")
+        self.assertEqual(headers["Referer"], "https://www.noon.com/egypt-ar/")
+
+    def test_retries_transient_server_error_with_jitter_and_honors_retry_after(self):
+        url = "https://www.noon.com/_vs/nc/mp-customer-catalog-api/api/v3/u/search?q=x&limit=20&country=eg&language=ar"
+        request = httpx.Request("GET", url)
+        unavailable = httpx.Response(503, headers={"Retry-After": "4"}, request=request)
+        success = httpx.Response(200, request=request, json={"country_code": "EG", "currency": "EGP", "hits": []})
+        with patch.object(scrape.httpx, "Client") as client_factory:
+            client_factory.return_value.headers = {}
+            client_factory.return_value.get.side_effect = [unavailable, success]
+            scraper = scrape.StoreScraper(delay=0, retries=1)
+            with patch.object(scrape.random, "uniform", return_value=0.25) as jitter, patch.object(scrape.time, "sleep") as sleep:
+                body, error = scraper.fetch("noon", url)
+
+        self.assertIsNone(error)
+        self.assertEqual(json.loads(body), {"country_code": "EG", "currency": "EGP", "hits": []})
+        self.assertEqual(client_factory.return_value.get.call_count, 2)
+        jitter.assert_called_once_with(0, 1.0)
+        sleep.assert_called_once_with(4.0)
+
+    def test_retries_timeouts_but_does_not_retry_forbidden_responses(self):
+        url = "https://www.noon.com/_vs/nc/mp-customer-catalog-api/api/v3/u/search?q=x&limit=20&country=eg&language=ar"
+        request = httpx.Request("GET", url)
+        success = httpx.Response(200, request=request, json={"country_code": "EG", "currency": "EGP", "hits": []})
+        with patch.object(scrape.httpx, "Client") as client_factory:
+            client_factory.return_value.headers = {}
+            client_factory.return_value.get.side_effect = [httpx.ReadTimeout("timed out", request=request), success]
+            scraper = scrape.StoreScraper(delay=0, retries=1)
+            with patch.object(scrape.time, "sleep"):
+                body, error = scraper.fetch("noon", url)
+        self.assertIsNone(error)
+        self.assertEqual(json.loads(body), {"country_code": "EG", "currency": "EGP", "hits": []})
+        self.assertEqual(client_factory.return_value.get.call_count, 2)
+
+        forbidden = httpx.Response(403, request=request)
+        with patch.object(scrape.httpx, "Client") as client_factory:
+            client_factory.return_value.headers = {}
+            client_factory.return_value.get.return_value = forbidden
+            scraper = scrape.StoreScraper(delay=0, retries=3)
+            body, error = scraper.fetch("noon", url)
+        self.assertIsNone(body)
+        self.assertEqual(error, "HTTP 403 (no retry)")
+        self.assertEqual(client_factory.return_value.get.call_count, 1)
+
+    def test_noon_fetch_rejects_json_without_verified_egypt_currency(self):
+        url = "https://www.noon.com/_vs/nc/mp-customer-catalog-api/api/v3/u/search?q=x&limit=20&country=eg&language=ar"
+        request = httpx.Request("GET", url)
+        response = httpx.Response(200, request=request, json={"hits": []})
+        with patch.object(scrape.httpx, "Client") as client_factory:
+            client_factory.return_value.headers = {}
+            client_factory.return_value.get.return_value = response
+            scraper = scrape.StoreScraper(delay=0, retries=0)
+            body, error = scraper.fetch("noon", url)
+        self.assertIsNone(body)
+        self.assertEqual(error, "Noon JSON lacks verified Egypt/EGP market fields")
 
 
 class PersistenceTests(unittest.TestCase):

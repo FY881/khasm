@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#f6f5f1">
     <meta name="description" content="خصم بيتابع أسعار نون مصر وأمازون مصر علشان يورّيك التخفيض الحقيقي مقارنة بتاريخ السعر.">
+    <meta name="products-data-url" content="https://raw.githubusercontent.com/FY881/khasm/data/data/products.json">
+    <meta name="telegram-channel-url" content="">
     <title>خصم — السعر الحقيقي، مش الوهمي</title>
     <link rel="stylesheet" href="./styles.css">
     <script src="./app.js" defer></script>
@@ -97,7 +99,14 @@
           </label>
         </form>
 
-        <div class="results-meta"><p id="results-count" aria-live="polite">بنجهّز النتائج…</p><button id="clear-filters" class="text-button" type="button" hidden>امسح الفلاتر</button></div>
+        <div class="results-meta">
+          <p id="results-count" aria-live="polite">بنجهّز النتائج…</p>
+          <div class="results-actions">
+            <button id="watchlist-toggle" class="text-button watchlist-toggle" type="button" aria-pressed="false">قائمة المتابعة (0)</button>
+            <button id="clear-filters" class="text-button" type="button" hidden>امسح الفلاتر</button>
+          </div>
+        </div>
+        <p id="watchlist-status" class="watchlist-status" role="status" aria-live="polite" hidden></p>
         <div id="message-area"></div>
         <div id="deals" class="result-groups"></div>
       </section>
