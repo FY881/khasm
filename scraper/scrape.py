@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl, quote, quote_plus, urlencode, urljoin, urlsplit, urlunsplit
+from urllib.parse import parse_qs, parse_qsl, quote, quote_plus, urlencode, urljoin, urlsplit, urlunsplit
 
 import httpx
 from bs4 import BeautifulSoup, Tag
@@ -224,6 +224,118 @@ def _hit_market_matches_egypt(hit: dict[str, Any]) -> bool:
     return not (regions - egypt or currencies - egp)
 
 
+def _page_is_egypt_market(store: str, page_url: str) -> bool:
+    parsed = urlsplit(page_url)
+    if parsed.hostname not in HOSTS.get(store, set()):
+        return False
+    if store == "amazon":
+        return True
+    query = parse_qs(parsed.query)
+    countries = {value.strip().casefold() for value in query.get("country", [])}
+    path_parts = {part.casefold() for part in parsed.path.split("/") if part}
+    return bool(countries & {"eg", "egypt"}) or "egypt-ar" in path_parts
+
+
+def _schema_types(value: Any) -> set[str]:
+    values = value if isinstance(value, list) else [value]
+    return {
+        re.split(r"[/#]", item.strip())[-1].casefold()
+        for item in values
+        if isinstance(item, str) and item.strip()
+    }
+
+
+def _jsonld_products(soup: BeautifulSoup, store: str, category: str, page_url: str) -> list[dict[str, Any]]:
+    if not _page_is_egypt_market(store, page_url):
+        return []
+
+    product_nodes: list[dict[str, Any]] = []
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            if "product" in _schema_types(value.get("@type")):
+                product_nodes.append(value)
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    for script in soup.select('script[type="application/ld+json"]'):
+        try:
+            visit(json.loads(script.string or script.get_text()))
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+    products: dict[str, dict[str, Any]] = {}
+    for node in product_nodes:
+        name = node.get("name")
+        raw_url = node.get("url")
+        if not isinstance(name, str) or not name.strip() or not isinstance(raw_url, str):
+            continue
+        url = _product_url(store, raw_url, page_url)
+        if not url:
+            continue
+
+        raw_offers = node.get("offers")
+        offers = raw_offers if isinstance(raw_offers, list) else [raw_offers]
+        for offer in offers:
+            if not isinstance(offer, dict):
+                continue
+            offer_types = _schema_types(offer.get("@type"))
+            if not offer_types & {"offer", "aggregateoffer"}:
+                continue
+            currency = offer.get("priceCurrency")
+            if not isinstance(currency, str) or currency.strip().upper() != "EGP":
+                continue
+            availability = offer.get("availability")
+            availability_values = availability if isinstance(availability, list) else [availability]
+            if any(
+                marker in "".join(re.findall(r"[a-z]+", value.casefold()))
+                for value in availability_values
+                if isinstance(value, str)
+                for marker in ("outofstock", "soldout", "discontinued")
+            ):
+                continue
+            raw_price = offer.get("price")
+            if raw_price is None and "aggregateoffer" in offer_types:
+                raw_price = offer.get("lowPrice")
+            current = _number(raw_price)
+            if current is None:
+                continue
+
+            asin = ""
+            if store == "amazon":
+                match = re.search(r"/(?:dp|gp/product)/([A-Z0-9]{10})(?:/|$)", urlsplit(url).path, re.I)
+                if not match:
+                    continue
+                asin = match.group(1).upper()
+            product_id = _id(store, url, asin)
+
+            image_value = node.get("image")
+            if isinstance(image_value, list):
+                image_value = next((item for item in image_value if isinstance(item, str)), None)
+            if isinstance(image_value, dict):
+                image_value = image_value.get("url")
+            image = None
+            if isinstance(image_value, str) and not image_value.startswith("data:"):
+                candidate = urljoin(page_url, image_value)
+                if urlsplit(candidate).scheme == "https":
+                    image = candidate
+
+            seller_value = offer.get("seller") or node.get("seller")
+            if isinstance(seller_value, dict):
+                seller_value = seller_value.get("name")
+            seller = seller_value if isinstance(seller_value, str) and len(seller_value) <= 120 else None
+            products.setdefault(product_id, {
+                "id": product_id, "store": store, "title": name.strip()[:500], "url": url,
+                "image": image, "current_price": current, "list_price": None,
+                "seller": seller, "category": category,
+            })
+            break
+    return list(products.values())
+
+
 def _noon_json_products(payload: dict[str, Any], category: str, page_url: str) -> list[dict[str, Any]]:
     hits = payload.get("hits")
     if not isinstance(hits, list) or not _is_egypt_egp(payload):
@@ -353,7 +465,7 @@ def parse_search_page(store: str, category: str, page_url: str, html: str) -> li
             "list_price": list_price if list_price and list_price > current else None,
             "seller": seller if seller and len(seller) <= 120 else None, "category": category,
         })
-    return list(products.values())
+    return list(products.values()) or _jsonld_products(soup, store, category, page_url)
 
 
 class StoreScraper:
@@ -437,7 +549,13 @@ class StoreScraper:
                 try:
                     payload = response.json()
                 except ValueError:
-                    return None, "non-JSON response (not parsed)"
+                    content_type = response.headers.get("content-type", "").lower()
+                    is_html = "html" in content_type or "xhtml+xml" in content_type
+                    if not is_html:
+                        return None, "non-JSON response (not parsed)"
+                    if not _page_is_egypt_market(store, str(response.url)):
+                        return None, "Noon HTML page is not explicitly Egypt-scoped"
+                    return body, None
                 if not isinstance(payload, dict) or not isinstance(payload.get("hits"), list):
                     return None, "unexpected Noon JSON response"
                 if not _is_egypt_egp(payload):
