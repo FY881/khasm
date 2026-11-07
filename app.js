@@ -37,6 +37,32 @@
     return el;
   }
 
+  function setupHeroDepth() {
+    const heroArt = document.querySelector('.hero-art');
+    if (!heroArt || typeof window.IntersectionObserver !== 'function' || typeof window.matchMedia !== 'function') return;
+
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const memory = Number(navigator.deviceMemory);
+    const cores = Number(navigator.hardwareConcurrency);
+    if (reducedMotion.matches || (Number.isFinite(memory) && memory <= 4) || (Number.isFinite(cores) && cores <= 4)) return;
+
+    let observer;
+    const disableDepth = () => {
+      heroArt.classList.remove('is-3d-ready');
+      observer?.disconnect();
+    };
+    reducedMotion.addEventListener?.('change', (event) => {
+      if (event.matches) disableDepth();
+    });
+
+    observer = new window.IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) return;
+      heroArt.classList.add('is-3d-ready');
+      observer.disconnect();
+    }, { threshold: 0.2 });
+    observer.observe(heroArt);
+  }
+
   function safeHttpsUrl(value) {
     if (typeof value !== 'string') return null;
     try {
@@ -708,5 +734,6 @@
   byId('detail-close').addEventListener('click', () => dialog.close());
   dialog.addEventListener('close', clearProductQuery);
   window.addEventListener('popstate', syncProductRoute);
+  setupHeroDepth();
   loadProducts();
 })();
