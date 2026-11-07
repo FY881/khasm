@@ -7,17 +7,19 @@ import json
 import logging
 import math
 import os
+import random
 import re
 import sys
 import tempfile
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl, quote_plus, urlencode, urljoin, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, quote_plus, urlencode, urljoin, urlsplit, urlunsplit
 
-import requests
+import httpx
 from bs4 import BeautifulSoup, Tag
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,14 +42,24 @@ QUERIES = {
     "fashion": ("ملابس", "clothing"),
 }
 HOSTS = {"noon": {"noon.com", "www.noon.com"}, "amazon": {"amazon.eg", "www.amazon.eg"}}
+NOON_SEARCH_API = "https://www.noon.com/_vs/nc/mp-customer-catalog-api/api/v3/u/search"
+NOON_PAGE_SIZE = 20
+NOON_COUNTRY = "eg"
+NOON_LANGUAGE = "ar"
 ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
+
+_REGION_KEYS = {"country", "country_code", "countrycode", "market", "marketplace", "region", "locale"}
+_CURRENCY_KEYS = {"currency", "currency_code", "currencycode", "price_currency", "pricecurrency"}
 
 
 def search_pages() -> list[tuple[str, str, str]]:
     pages = []
     for category, (noon_query, amazon_query) in QUERIES.items():
         pages.extend([
-            ("noon", category, "https://www.noon.com/egypt-ar/search/?q=" + quote_plus(noon_query)),
+            ("noon", category, NOON_SEARCH_API + "?" + urlencode({
+                "q": noon_query, "limit": NOON_PAGE_SIZE,
+                "country": NOON_COUNTRY, "language": NOON_LANGUAGE,
+            })),
             ("amazon", category, "https://www.amazon.eg/s?k=" + quote_plus(amazon_query) + "&language=ar_AE"),
         ])
     return pages
@@ -94,7 +106,10 @@ def _product_url(store: str, href: str, base: str) -> str | None:
         match = re.search(r"/(?:dp|gp/product)/([A-Z0-9]{10})(?:/|$)", parsed.path, re.I)
         if match:
             return "https://www.amazon.eg/dp/" + match.group(1).upper()
-    query = [(k, v) for k, v in parse_qsl(parsed.query) if not k.lower().startswith("utm_") and k.lower() != "ref"]
+    query = [
+        (k, v) for k, v in parse_qsl(parsed.query)
+        if not k.lower().startswith("utm_") and k.lower() not in {"ref", "nav_ctx"}
+    ]
     return urlunsplit(("https", parsed.netloc.lower(), parsed.path.rstrip("/") or "/", urlencode(query), ""))
 
 
@@ -142,7 +157,151 @@ def _noon_cards(soup: BeautifulSoup) -> list[Tag]:
     return found
 
 
+def _amazon_out_of_stock(card: Tag) -> bool:
+    text = _text(card).casefold()
+    unavailable_phrases = (
+        "out of stock", "currently unavailable", "temporarily unavailable",
+        "sold out", "not available", "غير متوفر", "غير متوفرة", "غير متاح",
+        "غير متاحة", "نفد من المخزون", "نفدت الكمية",
+    )
+    if any(phrase in text for phrase in unavailable_phrases):
+        return True
+
+    unavailable_schema = ("outofstock", "out_of_stock", "soldout", "sold_out", "discontinued", "unavailable")
+    for node in card.select('[itemprop="availability"], [data-availability]'):
+        values = [node.get("content"), node.get("href"), node.get("data-availability"), _text(node)]
+        for value in values:
+            if isinstance(value, str):
+                normalized = re.sub(r"[^a-z]", "", value.casefold())
+                if any(marker.replace("_", "") in normalized for marker in unavailable_schema):
+                    return True
+    return False
+
+
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value) if math.isfinite(value) and value > 0 else None
+    if isinstance(value, str):
+        return parse_price(value)
+    return None
+
+
+def _market_values(value: Any) -> tuple[set[str], set[str]]:
+    regions: set[str] = set()
+    currencies: set[str] = set()
+    if isinstance(value, dict):
+        for key, item in value.items():
+            normalized_key = re.sub(r"[^a-z_]", "", str(key).lower())
+            if normalized_key in _REGION_KEYS and isinstance(item, str):
+                regions.add(item.strip().casefold().replace("_", "-"))
+            elif normalized_key in _CURRENCY_KEYS and isinstance(item, str):
+                currencies.add(item.strip().casefold())
+            child_regions, child_currencies = _market_values(item)
+            regions.update(child_regions)
+            currencies.update(child_currencies)
+    elif isinstance(value, list):
+        for item in value:
+            child_regions, child_currencies = _market_values(item)
+            regions.update(child_regions)
+            currencies.update(child_currencies)
+    return regions, currencies
+
+
+def _is_egypt_egp(payload: dict[str, Any]) -> bool:
+    metadata = {key: value for key, value in payload.items() if key != "hits"}
+    regions, currencies = _market_values(metadata)
+    egypt = {"eg", "egypt", "egypt-ar", "ar-eg", "en-eg", "egypt-en"}
+    egp = {"egp", "egyptian pound", "egyptian pounds", "جنيه مصري"}
+    return bool(regions & egypt) and bool(currencies & egp) and regions <= egypt and currencies <= egp
+
+
+def _hit_market_matches_egypt(hit: dict[str, Any]) -> bool:
+    regions, currencies = _market_values(hit)
+    egypt = {"eg", "egypt", "egypt-ar", "ar-eg", "en-eg", "egypt-en"}
+    egp = {"egp", "egyptian pound", "egyptian pounds", "جنيه مصري"}
+    return not (regions - egypt or currencies - egp)
+
+
+def _noon_json_products(payload: dict[str, Any], category: str, page_url: str) -> list[dict[str, Any]]:
+    hits = payload.get("hits")
+    if not isinstance(hits, list) or not _is_egypt_egp(payload):
+        return []
+    products: dict[str, dict[str, Any]] = {}
+    for hit in hits:
+        if (
+            not isinstance(hit, dict) or hit.get("is_buyable") is False
+            or not _hit_market_matches_egypt(hit)
+        ):
+            continue
+        stock = hit.get("stock")
+        if isinstance(stock, (int, float)) and not isinstance(stock, bool):
+            if not math.isfinite(stock) or stock <= 0:
+                continue
+        if isinstance(stock, str) and stock.strip():
+            try:
+                numeric_stock = float(stock)
+                if not math.isfinite(numeric_stock) or numeric_stock <= 0:
+                    continue
+            except ValueError:
+                pass
+
+        product_url = hit.get("product_url")
+        pdp_url = product_url.get("pdp_url") if isinstance(product_url, dict) else None
+        if not isinstance(pdp_url, str):
+            pdp_url = hit.get("pdp_url")
+        url = _product_url("noon", pdp_url, page_url) if isinstance(pdp_url, str) else None
+        sku = hit.get("sku")
+        if not url and isinstance(sku, str) and isinstance(product_url, dict):
+            slug = product_url.get("url")
+            if isinstance(slug, str) and slug.strip("/"):
+                path = "/".join(quote(part, safe="-_") for part in slug.strip("/").split("/"))
+                path += "/" + quote(sku, safe="-_") + "/p/"
+                url = _product_url("noon", "/" + path, page_url)
+        if not url:
+            continue
+
+        title = hit.get("name")
+        if not isinstance(title, str) or not title.strip():
+            continue
+        price = _number(hit.get("price"))
+        sale_price = _number(hit.get("sale_price"))
+        current = sale_price if sale_price is not None and (price is None or sale_price <= price) else price
+        if current is None:
+            continue
+        list_price = price if price is not None and price > current else None
+
+        seller_value = hit.get("seller")
+        if isinstance(seller_value, dict):
+            seller_value = seller_value.get("store_name") or seller_value.get("name")
+        seller = seller_value if isinstance(seller_value, str) and len(seller_value) <= 120 else None
+        if seller is None and isinstance(hit.get("store_name"), str):
+            seller = hit["store_name"][:120]
+        image_value = hit.get("image_url") or hit.get("image")
+        image = None
+        if isinstance(image_value, str) and not image_value.startswith("data:"):
+            image_url = urljoin(page_url, image_value)
+            if urlsplit(image_url).scheme == "https":
+                image = image_url
+
+        product_id = _id("noon", url)
+        products.setdefault(product_id, {
+            "id": product_id, "store": "noon", "title": title.strip()[:500], "url": url,
+            "image": image, "current_price": current, "list_price": list_price,
+            "seller": seller, "category": category,
+        })
+    return list(products.values())
+
+
 def parse_search_page(store: str, category: str, page_url: str, html: str) -> list[dict[str, Any]]:
+    if store == "noon":
+        try:
+            payload = json.loads(html)
+        except (json.JSONDecodeError, TypeError):
+            payload = None
+        if isinstance(payload, dict):
+            return _noon_json_products(payload, category, page_url)
     soup = BeautifulSoup(html, "html.parser")
     if store == "amazon":
         cards = soup.select('[data-component-type="s-search-result"][data-asin]')
@@ -153,6 +312,8 @@ def parse_search_page(store: str, category: str, page_url: str, html: str) -> li
     products = {}
     for card in cards:
         if store == "amazon":
+            if _amazon_out_of_stock(card):
+                continue
             asin = str(card.get("data-asin", "")).strip()
             link = next((a for a in card.select("a[href*='/dp/'], a[href*='/gp/product/']") if _text(a)), None)
             if link is None:
@@ -196,16 +357,44 @@ def parse_search_page(store: str, category: str, page_url: str, html: str) -> li
 
 
 class StoreScraper:
-    def __init__(self, delay: float = 2, retries: int = 1, timeout: float = 12):
+    def __init__(self, delay: float = 2, retries: int = 2, timeout: float = 12):
         self.delay, self.retries, self.timeout = max(0, delay), max(0, retries), timeout
         self.last_request = 0.0
-        self.session = requests.Session()
-        self.session.headers.update({
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "ar-EG,ar;q=0.9,en;q=0.7",
-            "DNT": "1", "Connection": "keep-alive", "Upgrade-Insecure-Requests": "1",
-        })
+        self.session = httpx.Client(
+            http2=True,
+            timeout=self.timeout,
+            follow_redirects=True,
+            headers={
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "ar-EG,ar;q=0.9,en;q=0.7",
+                "DNT": "1",
+            },
+        )
+
+    @staticmethod
+    def _retry_after(response: httpx.Response) -> float | None:
+        value = response.headers.get("Retry-After")
+        if not value:
+            return None
+        try:
+            return max(0.0, float(value))
+        except ValueError:
+            try:
+                target = parsedate_to_datetime(value)
+            except (TypeError, ValueError, OverflowError):
+                return None
+            if target.tzinfo is None:
+                target = target.replace(tzinfo=timezone.utc)
+            return max(0.0, (target - datetime.now(timezone.utc)).total_seconds())
+
+    def _backoff(self, attempt: int, response: httpx.Response | None = None) -> None:
+        delay = random.uniform(0, min(30.0, float(2 ** attempt)))
+        if response is not None:
+            retry_after = self._retry_after(response)
+            if retry_after is not None:
+                delay = max(delay, retry_after)
+        time.sleep(delay)
 
     def fetch(self, store: str, url: str) -> tuple[str | None, str | None]:
         for attempt in range(self.retries + 1):
@@ -213,29 +402,47 @@ class StoreScraper:
             if wait > 0:
                 time.sleep(wait)
             self.last_request = time.monotonic()
+            headers = None
+            if store == "noon":
+                headers = {
+                    "Accept": "application/json",
+                    "Accept-Language": "ar-EG,ar;q=0.9,en;q=0.7",
+                    "Referer": "https://www.noon.com/egypt-ar/",
+                    "x-locale": "ar-eg",
+                }
             try:
-                response = self.session.get(url, timeout=self.timeout, allow_redirects=True)
-            except requests.RequestException as exc:
+                response = self.session.get(url, timeout=self.timeout, headers=headers)
+            except httpx.RequestError as exc:
                 if attempt < self.retries:
                     LOG.warning("Retrying %s after %s", url, exc.__class__.__name__)
-                    time.sleep(2 ** attempt)
+                    self._backoff(attempt)
                     continue
                 return None, f"request error: {exc.__class__.__name__}"
-            if urlsplit(response.url).hostname not in HOSTS[store]:
+            if urlsplit(str(response.url)).hostname not in HOSTS[store]:
                 return None, "redirected outside the store domain"
-            if response.status_code in (401, 403, 429):
+            if response.status_code in (401, 403):
                 return None, f"HTTP {response.status_code} (no retry)"
-            if response.status_code >= 500 and attempt < self.retries:
-                LOG.warning("Retrying %s after HTTP %d", url, response.status_code)
-                time.sleep(2 ** attempt)
-                continue
+            if response.status_code in (408, 429) or response.status_code >= 500:
+                if attempt < self.retries:
+                    LOG.warning("Retrying %s after HTTP %d", url, response.status_code)
+                    self._backoff(attempt, response)
+                    continue
             if response.status_code != 200:
                 return None, f"HTTP {response.status_code}"
             body = response.text
             lower = body[:250_000].lower()
             if any(marker in lower for marker in ("robot check", "captcha", "verify you are human", "automated access")):
                 return None, "challenge page (not bypassed)"
-            if len(response.content) < 1000:
+            if store == "noon":
+                try:
+                    payload = response.json()
+                except ValueError:
+                    return None, "non-JSON response (not parsed)"
+                if not isinstance(payload, dict) or not isinstance(payload.get("hits"), list):
+                    return None, "unexpected Noon JSON response"
+                if not _is_egypt_egp(payload):
+                    return None, "Noon JSON lacks verified Egypt/EGP market fields"
+            elif len(response.content) < 1000:
                 return None, f"short page ({len(response.content)} bytes)"
             return body, None
         return None, "retry limit reached"
@@ -406,7 +613,11 @@ def run(delay: float | None = None) -> dict[str, Any]:
     report = {store: {"pages": 0, "ok": 0, "blocked": 0, "products": 0} for store in HOSTS}
     blocked_pages: list[dict[str, str]] = []
     unavailable_pages: list[dict[str, str]] = []
-    scraper = StoreScraper(delay if delay is not None else float(os.getenv("KHASM_REQUEST_DELAY", "2")), retries=int(os.getenv("KHASM_RETRIES", "1")), timeout=float(os.getenv("KHASM_HTTP_TIMEOUT", "12")))
+    scraper = StoreScraper(
+        delay if delay is not None else float(os.getenv("KHASM_REQUEST_DELAY", "2")),
+        retries=int(os.getenv("KHASM_RETRIES", "2")),
+        timeout=float(os.getenv("KHASM_HTTP_TIMEOUT", "12")),
+    )
     for store, category, url in search_pages():
         report[store]["pages"] += 1
         html, error = scraper.fetch(store, url)

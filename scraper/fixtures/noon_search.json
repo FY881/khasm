@@ -1,0 +1,52 @@
+{
+  "country_code": "EG",
+  "currency": "EGP",
+  "search": {
+    "q": "هواتف ذكية",
+    "page": 1,
+    "limit": 20
+  },
+  "hits": [
+    {
+      "sku": "N12345678A",
+      "name": "هاتف تجريبي 256 جيجابايت",
+      "price": 1649,
+      "sale_price": 1267,
+      "is_buyable": true,
+      "stock": 3,
+      "product_url": {
+        "url": "sample-phone",
+        "pdp_url": "/sample-phone/N12345678A/p/?o=offer1&nav_ctx=remove"
+      },
+      "image": "https://f.nooncdn.com/p/sample.jpg",
+      "seller": {
+        "store_name": "Test seller"
+      }
+    },
+    {
+      "sku": "N23456789A",
+      "name": "منتج متوفر بسعر عادي",
+      "price": 900,
+      "sale_price": null,
+      "is_buyable": true,
+      "stock": 4,
+      "product_url": {
+        "url": "available-item",
+        "pdp_url": "/available-item/N23456789A/p/"
+      },
+      "image": "https://f.nooncdn.com/p/available.jpg"
+    },
+    {
+      "sku": "N34567890A",
+      "name": "منتج غير متوفر",
+      "price": 500,
+      "sale_price": 400,
+      "is_buyable": false,
+      "stock": 0,
+      "product_url": {
+        "url": "out-of-stock-item",
+        "pdp_url": "/out-of-stock-item/N34567890A/p/"
+      }
+    }
+  ]
+}
