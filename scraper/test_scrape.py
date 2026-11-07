@@ -131,6 +131,46 @@ class ScraperTests(unittest.TestCase):
         )
         self.assertEqual(products, [])
 
+    def test_noon_jsonld_fallback_requires_egypt_scoped_page_and_egp_offer(self):
+        html = '''<script type="application/ld+json">
+        {"@type":"Product","name":"هاتف schema","url":"/egypt-ar/product/p/ABC123",
+         "offers":{"@type":"Offer","price":"12500.50","priceCurrency":"EGP",
+                   "availability":"https://schema.org/InStock"}}
+        </script>'''
+        page = "https://www.noon.com/_vs/search?country=eg&language=ar"
+        products = parse_search_page("noon", "phones", page, html)
+        self.assertEqual(len(products), 1)
+        self.assertEqual(products[0]["id"], "noon-ABC123")
+        self.assertEqual(products[0]["current_price"], 12500.5)
+        self.assertIsNone(products[0]["list_price"])
+
+        self.assertEqual(
+            parse_search_page("noon", "phones", "https://www.noon.com/search?q=x", html),
+            [],
+        )
+        self.assertEqual(
+            parse_search_page("noon", "phones", page, html.replace('"EGP"', '"AED"')),
+            [],
+        )
+
+    def test_amazon_jsonld_fallback_validates_egp_url_and_availability(self):
+        html = '''<script type="application/ld+json">
+        {"@type":"Product","name":"Phone","url":"/dp/B012345678",
+         "image":"https://images.example/phone.jpg",
+         "offers":{"@type":"Offer","price":"8500","priceCurrency":"EGP",
+                   "seller":{"name":"Store"},"availability":"https://schema.org/InStock"}}
+        </script>'''
+        page = "https://www.amazon.eg/s?k=phone"
+        products = parse_search_page("amazon", "phones", page, html)
+        self.assertEqual(len(products), 1)
+        self.assertEqual(products[0]["id"], "amazon-B012345678")
+        self.assertEqual(products[0]["current_price"], 8500.0)
+        self.assertEqual(products[0]["seller"], "Store")
+        self.assertEqual(products[0]["image"], "https://images.example/phone.jpg")
+
+        self.assertEqual(parse_search_page("amazon", "phones", page, html.replace('"EGP"', '"AED"')), [])
+        self.assertEqual(parse_search_page("amazon", "phones", page, html.replace("InStock", "OutOfStock")), [])
+
 
 class HttpClientTests(unittest.TestCase):
     def test_http2_client_and_egypt_locale_headers(self):
@@ -208,6 +248,34 @@ class HttpClientTests(unittest.TestCase):
             body, error = scraper.fetch("noon", url)
         self.assertIsNone(body)
         self.assertEqual(error, "Noon JSON lacks verified Egypt/EGP market fields")
+
+    def test_noon_fetch_accepts_html_only_from_egypt_scoped_store_route(self):
+        url = "https://www.noon.com/_vs/search?q=x&country=eg&language=ar"
+        request = httpx.Request("GET", url)
+        response = httpx.Response(
+            200, request=request, headers={"content-type": "text/html; charset=utf-8"},
+            text="<html><script type='application/ld+json'>{}</script></html>",
+        )
+        with patch.object(scrape.httpx, "Client") as client_factory:
+            client_factory.return_value.headers = {}
+            client_factory.return_value.get.return_value = response
+            scraper = scrape.StoreScraper(delay=0, retries=0)
+            body, error = scraper.fetch("noon", url)
+        self.assertIsNone(error)
+        self.assertIn("application/ld+json", body)
+
+        url = "https://www.noon.com/search?q=x"
+        response = httpx.Response(
+            200, request=httpx.Request("GET", url),
+            headers={"content-type": "text/html"}, text="<html></html>",
+        )
+        with patch.object(scrape.httpx, "Client") as client_factory:
+            client_factory.return_value.headers = {}
+            client_factory.return_value.get.return_value = response
+            scraper = scrape.StoreScraper(delay=0, retries=0)
+            body, error = scraper.fetch("noon", url)
+        self.assertIsNone(body)
+        self.assertEqual(error, "Noon HTML page is not explicitly Egypt-scoped")
 
 
 class PersistenceTests(unittest.TestCase):
