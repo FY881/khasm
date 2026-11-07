@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from scraper import scrape
+from scraper.reader import NoonReader, is_explicit_access_denial, noon_search_url
 from scraper.scoring import score_product
 
 LOG = logging.getLogger("khasm.worker")
@@ -360,6 +361,8 @@ class PriceWorker:
         self.sleeper = sleeper
         self.gate = RequestGate(request_interval, clock=clock, sleeper=sleeper)
         self.scraper = (scraper_factory or (lambda: scrape.StoreScraper(delay=0, retries=0, timeout=20)))()
+        self.reader = NoonReader() if store == "noon" else None
+        self.reader_urls = {category: noon_search_url(category) for category in self.categories} if store == "noon" else {}
         self.urls = {
             category: url for store_name, category, url in scrape.search_pages()
             if store_name == store and category in self.categories
@@ -398,8 +401,25 @@ class PriceWorker:
         self.gate.mark_started()
         html, error = self.scraper.fetch(self.store, self.urls[category])
         if error:
+            if self.reader is not None and not is_explicit_access_denial(error):
+                return self._reader_request(category, deadline, error)
             return None, error
-        return scrape.parse_search_page(self.store, category, self.urls[category], html or ""), None
+        products = scrape.parse_search_page(self.store, category, self.urls[category], html or "")
+        if products or self.reader is None:
+            return products, None
+        return self._reader_request(category, deadline, "No products parsed from Noon primary response")
+
+    def _reader_request(
+        self, category: str, deadline: float, primary_error: str,
+    ) -> tuple[list[dict[str, Any]] | None, str | None]:
+        products, error = self.reader.fetch(
+            self.reader_urls[category], category, gate=self.gate, deadline=deadline, clock=self.clock,
+        )
+        if error:
+            return None, f"{primary_error}; Reader fallback failed: {error}"
+        if products:
+            LOG.info("Noon Reader fallback returned %d Egypt/EGP products for %s", len(products), category)
+        return products, None
 
     def _has_pending(self) -> bool:
         return any(self.pending.values()) or any(self.pending_checked.values())
